@@ -1,3 +1,69 @@
+# Wan2.2-TI2V-5B LoRA 训练 & 对比推理（V100-32GB 适配）
+
+> 本仓库 = DiffSynth-Studio 快照 + 在其上完成的 **Wan2.2-TI2V-5B LoRA 微调**与 **base/LoRA 对比推理**。上游原始 README 保留在文末。
+
+## 一句话总结
+
+在单张 **V100-32GB** 上，用 OpenVid 高质量子集（886 条）对预训练 **Wan2.2-TI2V-5B** 做 **LoRA(rank=32)** 微调（2 epoch / 1772 步），并产出「训练前底模 vs 训练后 LoRA」的同条件对比视频；针对 V100 不支持 bf16、PyTorch 2.4 缺 flex_attention 等限制，对上游打了 **4 处补丁**。
+
+## 成果
+
+- **训练**：作业成功收敛，6 个 checkpoint（step-300 ~ step-1772），权重体检无 NaN。
+- **推理**：`base_*.mp4` / `lora_*.mp4` 各 3 条，同首帧 / 同 prompt / 同 seed，可直接对比。
+- 权重 / 数据集 / 视频等**大文件不在本仓库**（见「大文件说明」）。
+
+## 关键文件
+
+| 文件 | 作用 |
+|---|---|
+| `train_wan22_lora.sh` | SLURM 训练提交脚本（全部超参在此）|
+| `examples/wanvideo/model_training/train.py` | 训练入口（WanTrainingModule）|
+| `infer_compare.py` / `infer_compare.sh` | base vs LoRA 对比推理 |
+| `infer_wan22_base.py` / `infer_wan22_lora.py` | 单组推理 |
+| `build_openvid_subset.py` / `prepare_dataset.py` | 数据集构建 |
+| `check_lora_nan.py` | LoRA 权重 NaN 体检 |
+| `diffsynth/diffusion/training_module.py` | 补丁①（LoRA fp32 upcast）|
+| `diffsynth/core/data/operators.py` | 补丁③（librosa 延迟导入）|
+| `diffsynth/models/wan_animate_2_dit.py` | 补丁④（flex_attention 兼容）|
+
+## 4 处上游补丁（V100 / PyTorch 2.4 跑通的关键）
+
+1. **training_module.py**：底模 fp16 时把 LoRA 可训练参数 upcast 到 fp32，配合 `accelerate --mixed_precision fp16` 的 GradScaler，根治「纯 fp16 无损失缩放 → 权重全 NaN 假成功」。
+2. **train.py**：`redirect_common_files=False`（本地只有原始 `.pth`，关闭重定向避免空文件列表报错）+ `--torch_dtype` 参数化（V100 用 float16）。
+3. **operators.py**：librosa 延迟到 `__call__` 导入，非音频任务构造算子不再崩。
+4. **wan_animate_2_dit.py**：flex_attention try/except，兼容 PyTorch < 2.5。
+
+## 训练配置要点
+
+- **底模**：Wan2.2-TI2V-5B（冻结）；LoRA 挂 DiT 的 `q,k,v,o,ffn.0,ffn.2`，rank=32。
+- **精度**：底模 fp16 + LoRA fp32 + accelerate fp16(GradScaler) = 标准 AMP。
+- **省显存**：gradient checkpointing + model CPU offload（V100-32GB 必需）。
+- **数据**：OpenVid 子集 936 条（筛 美学≥5.8 / 时序≥0.99 / 时长≥3s / 运动≤25），train 886 / test 50；每条源视频 ≥3s，训练每次喂 **49 帧（≈3.3s @15fps）**。
+- **步数**：batch=1 → 886 步/epoch × 2 epoch ≈ 1772 步；`save_steps=300`。
+
+## 推理 / 对比
+
+- `infer_compare.py`：底模只加载一次，先跑 base 组，再 `load_lora(step-1772)` 跑 lora 组；同首帧 + 同 prompt + 同 seed。
+- 输出：`base_{i}.mp4`、`lora_{i}.mp4`、`input_{i}.jpg`、`prompts.txt`。
+
+## 复跑
+
+- 训练：`sbatch train_wan22_lora.sh`
+- 对比推理：`sbatch infer_compare.sh`
+- 前置：`/public/home/liuhuan/models` 下的 Wan2.2-TI2V-5B 权重 + `openvid_subset` 数据集。
+
+## 大文件说明（不在本仓库）
+
+ckpt 权重、OpenVid 数据集、models 底模、输出 mp4 均被 `.gitignore` 排除或存放在仓库外（`workspace_xd/ckpt`、`workspace_xd/data`），本仓库只含代码与脚本。
+
+## 备份与推送
+
+本仓库以**单 commit 快照**备份到个人 GitHub（remote 名 `xingdong`）。因本地为 shallow clone，推全上游历史会失败，故用孤儿分支 `wan22_snapshot` 推送。更新备份：切 `wan22_snapshot` → 同步改动 → commit → `git push xingdong wan22_snapshot:main`。
+
+---
+
+> 以下为 DiffSynth-Studio 上游原始 README（本仓库基于其快照）。
+
 # DiffSynth-Studio
 
 <a href="https://github.com/modelscope/DiffSynth-Studio"><img src=".github/workflows/logo.gif" title="Logo" style="max-width:100%;" width="55" /></a> <a href="https://trendshift.io/repositories/10946" target="_blank"><img src="https://trendshift.io/api/badge/repositories/10946" alt="modelscope%2FDiffSynth-Studio | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a></p>
